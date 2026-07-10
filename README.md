@@ -72,10 +72,11 @@ pip install -r requirements.txt
 
 ## 🤖 Configure Bot Token
 
-Open **bot.py** and replace:
+Open **.env** and replace:
 
 ```python
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+Add Your Bot Token ,,
+BOT_TOKEN=8949xxxxxxxxxxxxxxxxxxxxxxxxxxHAU-8
 ```
 
 with
@@ -171,8 +172,8 @@ View statistics:
 tempmail-telegram-bot/
 │── bot.py
 │── requirements.txt
+│── .env
 │── README.md
-│── LICENSE
 ```
 
 ---
