@@ -9,6 +9,183 @@
 A fully-featured Telegram bot that generates temporary email addresses using the [Mail.tm](https://mail.tm) API. Protect your privacy, avoid spam, and receive OTPs or verification codes – all from your favourite messenger.
 
 ---
+### Prerequisites
+
+- Python 3.8 or higher
+- Visual Studio Code
+- Git
+- A Telegram Bot Token from @BotFather
+
+---
+
+## 📥 Clone Repository
+
+```bash
+git clone https://github.com/xsazedul/tempmail-telegram-bot.git
+cd tempmail-telegram-bot
+```
+
+---
+
+## 📂 Open in VS Code
+
+Open the project with VS Code:
+
+```bash
+code .
+```
+
+Or open VS Code manually and select the project folder.
+
+---
+
+## 🐍 Create Virtual Environment
+
+### Windows
+
+```bash
+python -m venv venv
+```
+
+Activate:
+
+```bash
+venv\Scripts\activate
+```
+
+### Linux / macOS
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+---
+
+## 📦 Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## 🤖 Configure Bot Token
+
+Open **bot.py** and replace:
+
+```python
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+```
+
+with
+
+```python
+BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+```
+
+Or use an environment variable.
+
+### Windows CMD
+
+```cmd
+set BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
+python bot.py
+```
+
+### Windows PowerShell
+
+```powershell
+$env:BOT_TOKEN="YOUR_TELEGRAM_BOT_TOKEN"
+python bot.py
+```
+
+### Linux / macOS
+
+```bash
+export BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
+python3 bot.py
+```
+
+---
+
+## ▶️ Run the Bot
+
+If you're using the token directly in **bot.py**:
+
+```bash
+python bot.py
+```
+
+or
+
+```bash
+python3 bot.py
+```
+
+If everything is configured correctly, you'll see:
+
+```text
+Starting TempMail Bot...
+```
+
+---
+
+## 💬 Test Your Bot
+
+Open Telegram and send:
+
+```text
+/start
+```
+
+Generate a new email:
+
+```text
+/new
+```
+
+View inbox:
+
+```text
+/inbox
+```
+
+Refresh inbox:
+
+```text
+/refresh
+```
+
+View statistics:
+
+```text
+/stats
+```
+
+---
+
+## 📁 Project Structure
+
+```text
+tempmail-telegram-bot/
+│── bot.py
+│── requirements.txt
+│── README.md
+│── LICENSE
+```
+
+---
+
+## 🛠 Built With
+
+- Python
+- python-telegram-bot
+- Mail.tm API
+- httpx
+- asyncio
+
+---
 
 ## ✨ Features
 
