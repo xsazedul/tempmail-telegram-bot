@@ -222,9 +222,6 @@ tempmail-telegram-bot/
 - A [Telegram Bot Token](https://core.telegram.org/bots#6-botfather) from @BotFather
 - (Optional) `pip` and a virtual environment
 
-### Installation
+## ⭐ Support
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/xsazedul/tempmail-telegram-bot.git
-   cd tempmail-telegram-bot
+If you found this project useful, please consider giving it a ⭐ on GitHub.
