@@ -12,6 +12,7 @@ import logging
 import os
 import random
 import string
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Any
@@ -27,8 +28,15 @@ from telegram.ext import (
     filters,
 )
 
+# ─── Load .env file ──────────────────────────────────────────
+from dotenv import load_dotenv
+load_dotenv()
+
 # ─── Configuration ──────────────────────────────────────────────
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN environment variable not set. Please set it in .env file.")
+
 API_BASE = "https://api.mail.tm"
 DEFAULT_PASSWORD = "Temp123456!"  # Mail.tm requires a strong password
 MESSAGES_PER_PAGE = 8
@@ -87,22 +95,36 @@ class MailTmAPI:
             headers["Authorization"] = f"Bearer {token}"
 
         url = f"{API_BASE}{path}"
+        logger.debug(f"API Request: {method} {url}")
         resp = await self.client.request(method, url, headers=headers, json=data)
+        logger.debug(f"API Response Status: {resp.status_code}")
+        
         if resp.status_code >= 400:
             try:
                 err = resp.json()
                 msg = err.get("detail", err.get("message", str(resp.status_code)))
             except Exception:
                 msg = resp.text[:200]
+            logger.error(f"API error {resp.status_code}: {msg}")
             raise Exception(f"API error {resp.status_code}: {msg}")
-        return resp.json() if resp.content else {}
+        
+        if resp.content:
+            try:
+                return resp.json()
+            except Exception as e:
+                logger.error(f"Failed to parse JSON: {e}")
+                return {}
+        return {}
 
     async def get_domains(self) -> List[str]:
         data = await self._request("GET", "/domains")
         members = data.get("hydra:member", [])
-        return [d["domain"] for d in members if d.get("domain")]
+        domains = [d["domain"] for d in members if d.get("domain")]
+        logger.info(f"Fetched domains: {domains}")
+        return domains
 
     async def create_account(self, address: str, password: str) -> dict:
+        logger.info(f"Creating account for {address}")
         return await self._request(
             "POST",
             "/accounts",
@@ -110,6 +132,7 @@ class MailTmAPI:
         )
 
     async def get_token(self, address: str, password: str) -> dict:
+        logger.info(f"Getting token for {address}")
         return await self._request(
             "POST",
             "/token",
@@ -117,6 +140,7 @@ class MailTmAPI:
         )
 
     async def delete_account(self, account_id: str, token: str) -> dict:
+        logger.info(f"Deleting account {account_id}")
         return await self._request("DELETE", f"/accounts/{account_id}", token=token)
 
     async def get_messages(self, token: str) -> List[dict]:
@@ -160,14 +184,22 @@ def truncate(text: str, max_len: int = 28) -> str:
     return text[:max_len] + "…" if len(text) > max_len else text
 
 
-def get_initials(email: str) -> str:
-    if not email:
-        return "?"
-    local = email.split("@")[0]
-    parts = local.replace(".", "_").replace("-", "_").split("_")
-    if len(parts) > 1:
-        return (parts[0][0] + parts[1][0]).upper()[:2]
-    return local[:2].upper()
+async def get_or_create_session(user_id: int) -> UserSession:
+    """Get or create a session for a user."""
+    if user_id not in sessions:
+        sessions[user_id] = UserSession(user_id=user_id)
+    return sessions[user_id]
+
+
+def message_keyboard(msg_id: str) -> InlineKeyboardMarkup:
+    """Keyboard for viewing a message."""
+    buttons = [
+        [
+            InlineKeyboardButton("🗑️ Delete", callback_data=f"delete_{msg_id}"),
+            InlineKeyboardButton("📫 Back to Inbox", callback_data="inbox"),
+        ],
+    ]
+    return InlineKeyboardMarkup(buttons)
 
 
 def random_local() -> str:
@@ -199,39 +231,6 @@ def build_email_display(session: UserSession) -> str:
     )
 
 
-def build_inbox_text(session: UserSession, page: int) -> str:
-    """Build the inbox list text with pagination."""
-    msgs = session.messages
-    total = len(msgs)
-
-    if total == 0:
-        return "📭 **Inbox is empty**\n\nNo messages yet. Waiting for incoming mail…"
-
-    start = page * MESSAGES_PER_PAGE
-    end = min(start + MESSAGES_PER_PAGE, total)
-    page_msgs = msgs[start:end]
-
-    if not page_msgs:
-        return "📭 **No messages on this page.**"
-
-    lines = [
-        f"📥 **Inbox** — {total} message{'s' if total != 1 else ''}",
-        f"Page {page + 1} of {(total + MESSAGES_PER_PAGE - 1) // MESSAGES_PER_PAGE}\n",
-    ]
-
-    for idx, m in enumerate(page_msgs, start=start + 1):
-        from_addr = m.get("from", {}).get("address", "Unknown")
-        subject = m.get("subject", "(no subject)")
-        time = format_date(m.get("createdAt"))
-        seen = m.get("seen", False)
-        dot = "●" if not seen else "○"
-        lines.append(f"{idx}. **{truncate(from_addr, 24)}**")
-        lines.append(f"   {dot} {truncate(subject, 40)} — {time}")
-        lines.append(f"   `/read_{m['id']}`")
-
-    return "\n".join(lines)
-
-
 def build_message_text(msg: dict) -> str:
     """Build the full email content view."""
     from_addr = msg.get("from", {}).get("address", "Unknown")
@@ -241,7 +240,6 @@ def build_message_text(msg: dict) -> str:
 
     # Strip HTML if present
     if msg.get("html") and not msg.get("text"):
-        import re
         body = re.sub(r"<[^>]+>", " ", msg.get("html", ""))
         body = re.sub(r"\s+", " ", body).strip()
 
@@ -283,7 +281,7 @@ def email_keyboard(address: str) -> InlineKeyboardMarkup:
     """Keyboard for the email display."""
     buttons = [
         [
-            InlineKeyboardButton("📋 Copy", copy_text=address),
+            InlineKeyboardButton("📋 Copy Email", callback_data="show_email"),
             InlineKeyboardButton("📫 Inbox", callback_data="inbox"),
         ],
         [
@@ -292,59 +290,6 @@ def email_keyboard(address: str) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("📊 Stats", callback_data="stats"),
-        ],
-    ]
-    return InlineKeyboardMarkup(buttons)
-
-
-def inbox_keyboard(total: int, page: int) -> InlineKeyboardMarkup:
-    """Keyboard for the inbox with pagination."""
-    max_page = max(0, (total + MESSAGES_PER_PAGE - 1) // MESSAGES_PER_PAGE - 1)
-    buttons = []
-
-    # Message buttons (only if there are messages)
-    if total > 0:
-        row = []
-        start = page * MESSAGES_PER_PAGE
-        end = min(start + MESSAGES_PER_PAGE, total)
-        for i in range(start, end):
-            msg = sessions.get(page)  # placeholder, will be replaced
-            # We can't build dynamic per-message buttons here easily without context
-            # We'll use a different approach in the callback
-        # Instead, we'll use a generic "read" button with the message ID
-        # We'll handle this in the callback query
-
-    # Navigation buttons
-    nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"inbox_{page-1}"))
-    if page < max_page:
-        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"inbox_{page+1}"))
-
-    if nav:
-        buttons.append(nav)
-
-    # Action buttons
-    actions = [
-        InlineKeyboardButton("🔄 Refresh", callback_data="refresh"),
-        InlineKeyboardButton("✨ New", callback_data="new"),
-        InlineKeyboardButton("📧 Copy Email", callback_data="show_email"),
-    ]
-    buttons.append(actions)
-
-    return InlineKeyboardMarkup(buttons)
-
-
-def message_keyboard(msg_id: str) -> InlineKeyboardMarkup:
-    """Keyboard for a single message view."""
-    buttons = [
-        [
-            InlineKeyboardButton("🔙 Back to Inbox", callback_data="inbox"),
-            InlineKeyboardButton("🗑️ Delete", callback_data=f"delete_{msg_id}"),
-        ],
-        [
-            InlineKeyboardButton("🔄 Refresh", callback_data="refresh"),
-            InlineKeyboardButton("📧 Copy Email", callback_data="show_email"),
         ],
     ]
     return InlineKeyboardMarkup(buttons)
@@ -361,21 +306,8 @@ def action_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🔄 Refresh", callback_data="refresh"),
             InlineKeyboardButton("📧 Copy Email", callback_data="show_email"),
         ],
-        [
-            InlineKeyboardButton("📊 Stats", callback_data="stats"),
-        ],
     ]
     return InlineKeyboardMarkup(buttons)
-
-
-# ─── Core Bot Logic ──────────────────────────────────────────
-async def get_or_create_session(user_id: int) -> UserSession:
-    """Get existing session or create a new one."""
-    if user_id not in sessions:
-        sessions[user_id] = UserSession(user_id=user_id)
-    return sessions[user_id]
-
-
 async def generate_email_for_user(user_id: int) -> Optional[str]:
     """
     Generate a new temporary email for a user.
@@ -387,32 +319,40 @@ async def generate_email_for_user(user_id: int) -> Optional[str]:
     if session.account_id and session.token:
         try:
             await api.delete_account(session.account_id, session.token)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to delete old account: {e}")
 
     try:
         # Get available domains
+        logger.info("Fetching available domains...")
         domains = await api.get_domains()
+        logger.info(f"Domains received: {domains}")
+
         if not domains:
-            logger.error("No domains available from Mail.tm")
-            return None
+            raise Exception("No Mail.tm domains available")
 
         domain = domains[0]
         local = random_local()
         address = f"{local}@{domain}"
 
+        logger.info(f"Attempting to create: {address}")
+
         # Create account
-        await api.create_account(address, session.password)
+        logger.info(f"Creating account for {address}...")
+        account = await api.create_account(address, session.password)
+        logger.info(f"Account created: {account.get('id')}")
 
         # Get token
+        logger.info("Getting authentication token...")
         token_data = await api.get_token(address, session.password)
+        logger.info("Token acquired successfully")
+
         token = token_data.get("token")
-        account_id = token_data.get("id")
+        account_id = account.get("id")
+        
+        if not token or not account_id:
+            raise Exception(f"Invalid response - token: {bool(token)}, account_id: {bool(account_id)}")
 
-        if not token:
-            raise Exception("Token missing from response")
-
-        # Update session
         session.token = token
         session.address = address
         session.account_id = account_id
@@ -424,11 +364,12 @@ async def generate_email_for_user(user_id: int) -> Optional[str]:
         session.last_refresh = datetime.now()
         session.is_active = True
 
-        logger.info(f"Generated email {address} for user {user_id}")
+        logger.info(f"Successfully generated email {address}")
+
         return address
 
     except Exception as e:
-        logger.error(f"Failed to generate email for user {user_id}: {e}")
+        logger.exception(f"Full error while generating email: {str(e)}")
         session.is_active = False
         return None
 
@@ -459,8 +400,6 @@ async def refresh_inbox(user_id: int, quiet: bool = False) -> int:
     except Exception as e:
         logger.warning(f"Failed to refresh inbox for user {user_id}: {e}")
         return 0
-
-
 async def read_message(user_id: int, msg_id: str) -> Optional[dict]:
     """
     Fetch and display a specific message.
@@ -548,21 +487,36 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def new_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /new command - generate a new email."""
     user_id = update.effective_user.id
-    await update.message.reply_text("⏳ Generating a new email…")
+    msg = await update.message.reply_text("⏳ Generating a new email…")
 
-    address = await generate_email_for_user(user_id)
-    session = await get_or_create_session(user_id)
+    try:
+        address = await generate_email_for_user(user_id)
+        session = await get_or_create_session(user_id)
 
-    if address:
-        await update.message.reply_text(
-            build_email_display(session),
-            parse_mode="Markdown",
-            reply_markup=email_keyboard(address),
-        )
-        await refresh_inbox(user_id, quiet=True)
-    else:
-        await update.message.reply_text(
-            "❌ Failed to generate email. Please try again.",
+        if address:
+            await msg.edit_text(
+                build_email_display(session),
+                parse_mode="Markdown",
+            )
+            await update.message.reply_text(
+                "✅ Email generated successfully!",
+                reply_markup=email_keyboard(address),
+            )
+            await refresh_inbox(user_id, quiet=True)
+        else:
+            await msg.edit_text(
+                "❌ Failed to generate email.\n\n"
+                "Possible reasons:\n"
+                "• Mail.tm API is down\n"
+                "• Network connection issue\n"
+                "• All available addresses are in use\n\n"
+                "Please try again in a few moments.",
+                reply_markup=action_keyboard(),
+            )
+    except Exception as e:
+        logger.exception("Error in new_command")
+        await msg.edit_text(
+            f"❌ Error: {str(e)}\n\nPlease try again.",
             reply_markup=action_keyboard(),
         )
 
@@ -618,7 +572,7 @@ async def inbox_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     nav = []
     max_page = (total + MESSAGES_PER_PAGE - 1) // MESSAGES_PER_PAGE - 1
     if max_page > 0:
-        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="inbox_0"))  # will be dynamic
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data="inbox_0"))
         nav.append(InlineKeyboardButton(f"1/{max_page+1}", callback_data="noop"))
         nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"inbox_{1}"))
     if nav:
@@ -631,9 +585,6 @@ async def inbox_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         InlineKeyboardButton("✨ New", callback_data="new"),
     ]
     buttons.append(actions)
-
-    # Store page in context for pagination
-    context.user_data["inbox_page"] = 0
 
     await update.message.reply_text(
         "\n".join(lines),
@@ -753,17 +704,29 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # ── Generate new ──
     if data == "new":
         await query.edit_message_text("⏳ Generating a new email…")
-        address = await generate_email_for_user(user_id)
-        if address:
+        try:
+            address = await generate_email_for_user(user_id)
+            if address:
+                await query.edit_message_text(
+                    build_email_display(session),
+                    parse_mode="Markdown",
+                    reply_markup=email_keyboard(address),
+                )
+                await refresh_inbox(user_id, quiet=True)
+            else:
+                await query.edit_message_text(
+                    "❌ Failed to generate email.\n\n"
+                    "Possible reasons:\n"
+                    "• Mail.tm API is temporarily unavailable\n"
+                    "• Network connection issue\n"
+                    "• Rate limit exceeded\n\n"
+                    "Please try again shortly.",
+                    reply_markup=action_keyboard(),
+                )
+        except Exception as e:
+            logger.exception("Error in callback new handler")
             await query.edit_message_text(
-                build_email_display(session),
-                parse_mode="Markdown",
-                reply_markup=email_keyboard(address),
-            )
-            await refresh_inbox(user_id, quiet=True)
-        else:
-            await query.edit_message_text(
-                "❌ Failed to generate email. Please try again.",
+                f"❌ Error: {str(e)}\n\nPlease try again.",
                 reply_markup=action_keyboard(),
             )
         return
@@ -797,7 +760,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     # ── Inbox ──
     if data.startswith("inbox"):
-        # Parse page number
         parts = data.split("_")
         if len(parts) > 1 and parts[1].isdigit():
             page = int(parts[1])
@@ -811,7 +773,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
 
-        # Refresh
         await refresh_inbox(user_id, quiet=True)
 
         if not session.messages:
@@ -845,7 +806,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             label = f"{idx}. {truncate(from_addr, 16)} {dot} {truncate(subject, 18)}"
             buttons.append([InlineKeyboardButton(label, callback_data=f"read_{m['id']}")])
 
-        # Navigation
         nav = []
         if page > 0:
             nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"inbox_{page-1}"))
@@ -854,7 +814,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if nav:
             buttons.append(nav)
 
-        # Actions
         actions = [
             InlineKeyboardButton("🔄 Refresh", callback_data="refresh"),
             InlineKeyboardButton("📧 Copy Email", callback_data="show_email"),
@@ -881,7 +840,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             return
 
-        # Build content
         content = build_message_text(msg)
         kb = message_keyboard(msg_id)
 
@@ -939,10 +897,6 @@ async def background_refresh():
 # ─── Main ─────────────────────────────────────────────────────
 async def main():
     """Start the bot."""
-    if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
-        print("⚠️ Please set BOT_TOKEN environment variable.")
-        return
-
     # Build application
     app = Application.builder().token(BOT_TOKEN).build()
 
